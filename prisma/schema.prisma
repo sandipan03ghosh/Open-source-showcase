@@ -1,0 +1,407 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------- Enums ----------
+
+enum Role {
+  USER
+  ADMIN
+  MODERATOR
+}
+
+enum Visibility {
+  PUBLIC
+  PRIVATE
+}
+
+enum SyncStatus {
+  IDLE
+  SYNCING
+  FAILED
+}
+
+enum Difficulty {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+}
+
+enum MediaType {
+  IMAGE
+  GIF
+  VIDEO
+  SCREENSHOT
+}
+
+enum ReportTargetType {
+  REPOSITORY
+  COMMENT
+  USER
+}
+
+enum ReportStatus {
+  OPEN
+  RESOLVED
+  DISMISSED
+}
+
+// ---------- Auth.js ----------
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ---------- Identity ----------
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+
+  githubId       Int?    @unique
+  username       String? @unique
+  avatarUrl      String?
+  bio            String?
+  githubUrl      String?
+  company        String?
+  websiteUrl     String?
+  location       String?
+  followersCount Int     @default(0)
+  followingCount Int     @default(0)
+  role           Role    @default(USER)
+  isBanned       Boolean @default(false)
+
+  accounts     Account[]
+  sessions     Session[]
+  repositories Repository[]
+  collections  Collection[]
+  bookmarks    Bookmark[]
+  likes        Like[]
+  reviews      Review[]
+  comments     Comment[]
+
+  following Follow[] @relation("Follower")
+  followers Follow[] @relation("Following")
+
+  notifications           Notification[]
+  reports                 Report[]
+  auditLogs               AuditLog[]
+  organizationMemberships OrganizationMember[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([role])
+}
+
+model Organization {
+  id          String  @id @default(cuid())
+  githubId    Int     @unique
+  login       String  @unique
+  name        String?
+  avatarUrl   String?
+  description String?
+  websiteUrl  String?
+
+  members      OrganizationMember[]
+  repositories Repository[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model OrganizationMember {
+  id             String @id @default(cuid())
+  organizationId String
+  userId         String
+  role           String?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+}
+
+// ---------- Repository ----------
+
+model Repository {
+  id            String     @id @default(cuid())
+  githubId      Int        @unique
+  name          String
+  fullName      String     @unique
+  description   String?
+  homepageUrl   String?
+  demoUrl       String?
+  defaultBranch String     @default("main")
+  license       String?
+  visibility    Visibility @default(PUBLIC)
+  isArchived    Boolean    @default(false)
+
+  // The actual GitHub owner (a user or org login) — distinct from `ownerId`
+  // below, which is the app user who showcased the repo.
+  githubOwnerLogin     String
+  githubOwnerAvatarUrl String?
+  githubOwnerType      String  @default("User")
+
+  stars      Int @default(0)
+  forks      Int @default(0)
+  watchers   Int @default(0)
+  openIssues Int @default(0)
+  sizeKb     Int @default(0)
+
+  topics       String[] @default([])
+  languages    Json?
+  // Derived from `languages`' keys at sync time so language filtering can
+  // use the same cheap array `has`/`hasSome` pattern as topics/technologies
+  // instead of querying into the JSON column.
+  languageNames String[] @default([])
+  technologies String[] @default([])
+
+  difficulty Difficulty?
+  isFeatured Boolean     @default(false)
+  viewCount  Int         @default(0)
+
+  githubCreatedAt DateTime?
+  githubUpdatedAt DateTime?
+
+  lastSyncedAt DateTime?
+  syncStatus   SyncStatus @default(IDLE)
+  syncError    String?
+
+  trendingScore      Float?
+  trendingComputedAt DateTime?
+
+  ownerId String
+  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  media           Media[]
+  collectionItems CollectionItem[]
+  bookmarks       Bookmark[]
+  likes           Like[]
+  reviews         Review[]
+  comments        Comment[]
+  reports         Report[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([stars])
+  @@index([lastSyncedAt])
+  @@index([trendingScore])
+  @@index([ownerId])
+  @@index([organizationId])
+  @@index([githubOwnerLogin])
+  @@index([license])
+  @@index([difficulty])
+  @@index([topics], type: Gin)
+  @@index([technologies], type: Gin)
+  @@index([languageNames], type: Gin)
+}
+
+model Media {
+  id           String     @id @default(cuid())
+  repositoryId String
+  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  type         MediaType
+  url          String
+  key          String
+  order        Int        @default(0)
+  createdAt    DateTime   @default(now())
+
+  @@index([repositoryId])
+}
+
+// ---------- Collections ----------
+
+model Collection {
+  id          String     @id @default(cuid())
+  ownerId     String
+  owner       User       @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  name        String
+  slug        String     @unique
+  description String?
+  visibility  Visibility @default(PUBLIC)
+  isFeatured  Boolean    @default(false)
+
+  items CollectionItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ownerId])
+}
+
+model CollectionItem {
+  id           String     @id @default(cuid())
+  collectionId String
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  repositoryId String
+  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  position     Int        @default(0)
+  createdAt    DateTime   @default(now())
+
+  @@unique([collectionId, repositoryId])
+  @@index([repositoryId])
+}
+
+// ---------- Community (schema defined now, actions/UI land in Phase 3) ----------
+
+model Bookmark {
+  id           String     @id @default(cuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repositoryId String
+  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+
+  @@unique([userId, repositoryId])
+  @@index([repositoryId])
+}
+
+model Like {
+  id           String     @id @default(cuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repositoryId String
+  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+
+  @@unique([userId, repositoryId])
+  @@index([repositoryId])
+}
+
+model Review {
+  id           String     @id @default(cuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repositoryId String
+  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  rating       Int
+  body         String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([userId, repositoryId])
+  @@index([repositoryId])
+}
+
+model Comment {
+  id           String     @id @default(cuid())
+  repositoryId String
+  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  authorId     String
+  author       User       @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parentId     String?
+  parent       Comment?   @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies      Comment[]  @relation("CommentReplies")
+  body         String
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@index([repositoryId])
+  @@index([parentId])
+}
+
+model Follow {
+  id            String @id @default(cuid())
+  followerId    String
+  follower      User   @relation("Follower", fields: [followerId], references: [id], onDelete: Cascade)
+  followingId   String
+  followingUser User   @relation("Following", fields: [followingId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([followerId, followingId])
+  @@index([followingId])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  payload   Json?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model Report {
+  id         String           @id @default(cuid())
+  reporterId String
+  reporter   User             @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+  targetType ReportTargetType
+  targetId   String
+  repositoryId String?
+  repository Repository?      @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  reason     String
+  status     ReportStatus     @default(OPEN)
+  createdAt  DateTime         @default(now())
+
+  @@index([status])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String
+  actor      User     @relation(fields: [actorId], references: [id], onDelete: Cascade)
+  action     String
+  targetType String
+  targetId   String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([actorId])
+  @@index([createdAt])
+}
